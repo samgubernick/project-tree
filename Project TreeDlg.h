@@ -58,6 +58,10 @@ protected:
 	void SaveWindowState();
 	void RestoreWindowState();
 
+	auto CreateNewFolder() -> void;
+
+	auto CreateNewFile() -> void;
+
 	afx_msg void OnPaint();
 	afx_msg void OnSize(UINT type, int cx, int cy);
 	afx_msg void OnClose();

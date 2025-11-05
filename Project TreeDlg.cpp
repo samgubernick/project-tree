@@ -81,6 +81,57 @@ BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 		return TRUE;
 	}
 
+	if (pMsg->message == WM_KEYDOWN)
+	{
+		// Check for Ctrl+Shift+N
+		if (pMsg->wParam == 'N' &&
+			(GetKeyState(VK_CONTROL) & 0x8000) &&
+			(GetKeyState(VK_SHIFT) & 0x8000))
+		{
+			CreateNewFolder();
+			return TRUE;
+		}
+
+		// Check for Ctrl+N (new file)
+		if (pMsg->wParam == 'N' &&
+			(GetKeyState(VK_CONTROL) & 0x8000) &&
+			!(GetKeyState(VK_SHIFT) & 0x8000))
+		{
+			CreateNewFile();
+			return TRUE;
+		}
+
+		// Existing Enter key handling
+		if (pMsg->wParam == VK_RETURN)
+		{
+			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+			if (hSelectedItem)
+			{
+				CString * pFilePath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+				if (pFilePath)
+				{
+					if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) == _T('\\'))
+					{
+						UINT state = m_treeCtrl.GetItemState(hSelectedItem, TVIS_EXPANDED);
+						if (state & TVIS_EXPANDED)
+						{
+							m_treeCtrl.Expand(hSelectedItem, TVE_COLLAPSE);
+						}
+						else
+						{
+							m_treeCtrl.Expand(hSelectedItem, TVE_EXPAND);
+						}
+					}
+					else
+					{
+						ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
+					}
+				}
+			}
+			return TRUE;
+		}
+	}
+
 	return CDialogEx::PreTranslateMessage(pMsg);
 }
 
@@ -308,7 +359,7 @@ void CProjectTreeDlg::PopulateTree()
 {
 	m_treeCtrl.DeleteAllItems();
 
-	m_rootPath = _T("C:\\source\\");
+	m_rootPath = _T("D:\\kurt\\");
 	CString const includePath = m_rootPath + "include\\";
 	CString const shaderPath = m_rootPath + "shader_angle\\";
 	CString const srcPath = m_rootPath + "src\\";
@@ -766,6 +817,159 @@ afx_msg void CProjectTreeDlg::OnLButtonUp(UINT nFlags, CPoint point)
 	CDialogEx::OnLButtonUp(nFlags, point);
 }
 
+void CProjectTreeDlg::CreateNewFolder()
+{
+	HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+	if (!hSelectedItem)
+		return;
+
+	CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+	if (!pPath)
+		return;
+
+	// Determine the parent folder
+	CString parentFolder;
+	bool isFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
+
+	if (isFolder)
+	{
+		// Selected item is a folder, create new folder inside it
+		parentFolder = *pPath;
+	}
+	else
+	{
+		// Selected item is a file, create new folder in its parent directory
+		int lastBackslash = pPath->ReverseFind(_T('\\'));
+		if (lastBackslash != -1)
+		{
+			parentFolder = pPath->Left(lastBackslash + 1);
+		}
+		else
+		{
+			return;  // Can't determine parent
+		}
+	}
+
+	// Find a unique folder name
+	CString newFolderName = _T("New Folder");
+	CString newFolderPath = parentFolder + newFolderName;
+	int counter = 1;
+
+	while (PathFileExists(newFolderPath))
+	{
+		newFolderName.Format(_T("New Folder (%d)"), counter++);
+		newFolderPath = parentFolder + newFolderName;
+	}
+
+	// Create the directory
+	if (CreateDirectory(newFolderPath, NULL))
+	{
+		// Add to tree
+		HTREEITEM hParentItem = isFolder ? hSelectedItem : m_treeCtrl.GetParentItem(hSelectedItem);
+
+		// Get folder icon
+		SHFILEINFO sfi = {0};
+		SHGetFileInfo(newFolderPath, FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(SHFILEINFO),
+					 SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+		int folderIcon = m_imageList.Add(sfi.hIcon);
+		DestroyIcon(sfi.hIcon);
+
+		// Insert new folder item
+		HTREEITEM hNewFolder = m_treeCtrl.InsertItem(newFolderName, folderIcon, folderIcon, hParentItem);
+		m_treeCtrl.SetItemData(hNewFolder, (DWORD_PTR)new CString(newFolderPath + _T("\\")));
+		m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hNewFolder);
+
+		// Expand parent and select new folder
+		m_treeCtrl.Expand(hParentItem, TVE_EXPAND);
+		m_treeCtrl.SelectItem(hNewFolder);
+
+		// Start editing the name
+		m_treeCtrl.EditLabel(hNewFolder);
+	}
+	else
+	{
+		MessageBox(_T("Failed to create folder"), _T("Error"), MB_OK | MB_ICONERROR);
+	}
+}
+
+void CProjectTreeDlg::CreateNewFile()
+{
+	HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+	if (!hSelectedItem)
+		return;
+
+	CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+	if (!pPath)
+		return;
+
+	// Determine the parent folder
+	CString parentFolder;
+	bool isFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
+
+	if (isFolder)
+	{
+		// Selected item is a folder, create file inside it
+		parentFolder = *pPath;
+	}
+	else
+	{
+		// Selected item is a file, create new file in its parent directory
+		int lastBackslash = pPath->ReverseFind(_T('\\'));
+		if (lastBackslash != -1)
+		{
+			parentFolder = pPath->Left(lastBackslash + 1);
+		}
+		else
+		{
+			return;  // Can't determine parent
+		}
+	}
+
+	// Find a unique file name
+	CString newFileName = _T("New File.txt");
+	CString newFilePath = parentFolder + newFileName;
+	int counter = 1;
+
+	while (PathFileExists(newFilePath))
+	{
+		newFileName.Format(_T("New File (%d).txt"), counter++);
+		newFilePath = parentFolder + newFileName;
+	}
+
+	// Create the empty file
+	HANDLE hFile = CreateFile(newFilePath, GENERIC_WRITE, 0, NULL,
+							 CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+
+	if (hFile != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hFile);
+
+		// Get file icon
+		SHFILEINFO sfi = {0};
+		SHGetFileInfo(newFilePath, 0, &sfi, sizeof(SHFILEINFO),
+					 SHGFI_ICON | SHGFI_SMALLICON);
+		int fileIcon = m_imageList.Add(sfi.hIcon);
+		DestroyIcon(sfi.hIcon);
+
+		// Add to tree
+		HTREEITEM hParentItem = isFolder ? hSelectedItem : m_treeCtrl.GetParentItem(hSelectedItem);
+
+		// Insert new file item
+		HTREEITEM hNewFile = m_treeCtrl.InsertItem(newFileName, fileIcon, fileIcon, hParentItem);
+		m_treeCtrl.SetItemData(hNewFile, (DWORD_PTR)new CString(newFilePath));
+
+		// Expand parent and select new file
+		m_treeCtrl.Expand(hParentItem, TVE_EXPAND);
+		m_treeCtrl.SelectItem(hNewFile);
+
+		// Start editing the name
+		m_treeCtrl.EditLabel(hNewFile);
+	}
+	else
+	{
+		MessageBox(_T("Failed to create file"), _T("Error"), MB_OK | MB_ICONERROR);
+	}
+}
 
 // If you add a minimize button to your dialog, you will need the code below
 //  to draw the icon.  For MFC applications using the document/view model,
