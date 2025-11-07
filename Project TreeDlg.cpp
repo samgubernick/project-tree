@@ -11,6 +11,8 @@
 #include <shellapi.h>
 
 #include <functional>
+#include <map>
+#include <set>
 
 IMPLEMENT_DYNAMIC(CProjectTreeDlg, CDialogEx)
 
@@ -28,7 +30,9 @@ CProjectTreeDlg::CProjectTreeDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_PROJECT_TREE_DIALOG, pParent),
 	m_bDragging(FALSE),
 	m_hDragItem(nullptr),
-	m_pDragImageList(nullptr)
+	m_pDragImageList(nullptr),
+	m_isCopiedItemFolder(false),
+	m_isCutOperation(false)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -43,46 +47,259 @@ void CProjectTreeDlg::PostNcDestroy()
 
 BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 {
-	if (pMsg->message == WM_KEYDOWN && pMsg->wParam == VK_RETURN)
+	if (pMsg->message == WM_KEYDOWN)
 	{
-		// Open the selected item
-		HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
-		if (hSelectedItem)
+		if (pMsg->wParam == VK_RETURN)
 		{
-			CString * pFilePath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
-			if (pFilePath)
+			if (m_treeCtrl.GetEditControl() != nullptr)
 			{
-				// Check if it's a folder (ends with backslash)
-				if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) == _T('\\'))
+				return FALSE;
+			}
+
+			// Open the selected item
+			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+			if (hSelectedItem)
+			{
+				CString * pFilePath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+				if (pFilePath)
 				{
-					// It's a folder, toggle expand/collapse
-					UINT state = m_treeCtrl.GetItemState(hSelectedItem, TVIS_EXPANDED);
-					if (state & TVIS_EXPANDED)
+					// Check if it's a folder (ends with backslash)
+					if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) == _T('\\'))
 					{
-						m_treeCtrl.Expand(hSelectedItem, TVE_COLLAPSE);
+						// It's a folder, toggle expand/collapse
+						UINT state = m_treeCtrl.GetItemState(hSelectedItem, TVIS_EXPANDED);
+						if (state & TVIS_EXPANDED)
+						{
+							m_treeCtrl.Expand(hSelectedItem, TVE_COLLAPSE);
+						}
+						else
+						{
+							m_treeCtrl.Expand(hSelectedItem, TVE_EXPAND);
+						}
 					}
 					else
 					{
-						m_treeCtrl.Expand(hSelectedItem, TVE_EXPAND);
+						// It's a file, open it
+						ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
 					}
 				}
-				else
+			}
+			return TRUE;  // Prevent default Enter behavior
+		}
+
+		if (pMsg->wParam == VK_ESCAPE)
+		{
+			// Cancel rename if in edit mode
+			CEdit * pEdit = m_treeCtrl.GetEditControl();
+			if (pEdit != nullptr)
+			{
+				// Discard the edit - return FALSE from label edit
+				m_treeCtrl.EndEditLabelNow(TRUE);  // TRUE = discard changes
+				return TRUE;
+			}
+			return FALSE;
+		}
+
+		// Check for Ctrl+C (copy)
+		if (pMsg->wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000))
+		{
+			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+			if (hSelectedItem)
+			{
+				// Don't allow copy from virtual view
+				if (IsItemInVirtualView(hSelectedItem))
 				{
-					// It's a file, open it
-					ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
+					MessageBox(_T("Cannot copy from Combined View. Please copy from src or include folders."),
+						_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+					return TRUE;
+				}
+
+				CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+				if (pPath)
+				{
+					m_copiedItemPath = *pPath;
+					m_isCopiedItemFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
 				}
 			}
+			return TRUE;
 		}
-		return TRUE;  // Prevent default Enter behavior
-	}
 
-	if (pMsg->message == WM_KEYDOWN && pMsg->wParam == VK_ESCAPE)
-	{
-		return TRUE;
-	}
+		// Check for Ctrl+V (paste)
+		if (pMsg->wParam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000))
+		{
+			if (m_copiedItemPath.IsEmpty())
+			{
+				MessageBox(_T("Nothing to paste. Use Ctrl+X or Ctrl+C to copy/cut a file or folder first."),
+					_T("Nothing Copied"), MB_OK | MB_ICONINFORMATION);
+				return TRUE;
+			}
 
-	if (pMsg->message == WM_KEYDOWN)
-	{
+			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+			if (hSelectedItem)
+			{
+				// Don't allow paste into virtual view
+				if (IsItemInVirtualView(hSelectedItem))
+				{
+					MessageBox(_T("Cannot paste into Combined View. Please paste into src or include folders."),
+						_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+					return TRUE;
+				}
+
+				CString * pTargetPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+				if (pTargetPath)
+				{
+					// Target must be a folder
+					bool isTargetFolder = (pTargetPath->GetAt(pTargetPath->GetLength() - 1) == _T('\\'));
+					if (!isTargetFolder)
+					{
+						// Use parent folder
+						hSelectedItem = m_treeCtrl.GetParentItem(hSelectedItem);
+						if (hSelectedItem)
+						{
+							pTargetPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+							if (pTargetPath)
+								isTargetFolder = true;
+						}
+					}
+
+					if (isTargetFolder && pTargetPath)
+					{
+						// Extract filename from source
+						int lastBackslash = m_copiedItemPath.ReverseFind(_T('\\'));
+						CString fileName;
+						if (lastBackslash >= 0)
+						{
+							fileName = m_copiedItemPath.Mid(lastBackslash + 1);
+						}
+						else
+						{
+							fileName = m_copiedItemPath;
+						}
+
+						// Build destination path
+						CString destPath = *pTargetPath + fileName;
+
+						// Handle source path
+						CString sourcePath = m_copiedItemPath;
+						if (m_isCopiedItemFolder)
+							sourcePath.TrimRight(_T("\\"));
+
+						CString destPathForMove = destPath;
+						if (m_isCopiedItemFolder)
+							destPathForMove.TrimRight(_T("\\"));
+
+						bool success = false;
+
+						if (m_isCutOperation)
+						{
+							// Move operation
+							if (MoveFile(sourcePath, destPathForMove))
+							{
+								success = true;
+							}
+						}
+						else
+						{
+							// Copy operation
+							if (CopyFile(sourcePath, destPathForMove, TRUE))
+							{
+								success = true;
+							}
+						}
+
+						if (success)
+						{
+							if (m_isCutOperation)
+							{
+								// For cut operation, reload all src and include folders
+								HTREEITEM hRoot = m_treeCtrl.GetRootItem();
+								while (hRoot)
+								{
+									CString text = m_treeCtrl.GetItemText(hRoot);
+									if (text == _T("src") || text == _T("include"))
+									{
+										CString * pRootPath = (CString *)m_treeCtrl.GetItemData(hRoot);
+										if (pRootPath)
+										{
+											// Clear all children
+											HTREEITEM hChild = m_treeCtrl.GetChildItem(hRoot);
+											while (hChild)
+											{
+												HTREEITEM hNext = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+												delete (CString *)m_treeCtrl.GetItemData(hChild);
+												m_treeCtrl.DeleteItem(hChild);
+												hChild = hNext;
+											}
+											// Reload from disk
+											LoadDirectoryContents(hRoot, *pRootPath);
+										}
+									}
+									hRoot = m_treeCtrl.GetNextItem(hRoot, TVGN_NEXT);
+								}
+							}
+							else
+							{
+								// For copy, only reload target
+								HTREEITEM hChild = m_treeCtrl.GetChildItem(hSelectedItem);
+								while (hChild)
+								{
+									HTREEITEM hNext = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+									delete (CString *)m_treeCtrl.GetItemData(hChild);
+									m_treeCtrl.DeleteItem(hChild);
+									hChild = hNext;
+								}
+								LoadDirectoryContents(hSelectedItem, *pTargetPath);
+							}
+
+							// DELETE THIS ENTIRE BLOCK - IT'S REDUNDANT AND CAUSES NULL POINTER
+							// ...
+
+							// Refresh virtual view
+							RefreshVirtualCombinedView();
+
+							// Clear the clipboard
+							m_copiedItemPath.Empty();
+							m_isCutOperation = false;
+						}
+						else
+						{
+							DWORD error = GetLastError();
+							CString msg;
+							msg.Format(_T("Failed to %s file/folder. Error code: %d"),
+								m_isCutOperation ? _T("move") : _T("copy"), error);
+							MessageBox(msg, _T("Error"), MB_OK | MB_ICONERROR);
+						}
+					}
+				}
+			}
+			return TRUE;
+		}
+
+		// Check for Ctrl+X (cut)
+		if (pMsg->wParam == 'X' && (GetKeyState(VK_CONTROL) & 0x8000))
+		{
+			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+			if (hSelectedItem)
+			{
+				// Don't allow cut from virtual view
+				if (IsItemInVirtualView(hSelectedItem))
+				{
+					MessageBox(_T("Cannot cut from Combined View. Please cut from src or include folders."),
+						_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+					return TRUE;
+				}
+
+				CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+				if (pPath)
+				{
+					m_copiedItemPath = *pPath;
+					m_isCopiedItemFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
+					m_isCutOperation = true;
+				}
+			}
+			return TRUE;
+		}
+
 		// Check for Ctrl+Shift+N
 		if (pMsg->wParam == 'N' &&
 			(GetKeyState(VK_CONTROL) & 0x8000) &&
@@ -101,32 +318,25 @@ BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 			return TRUE;
 		}
 
-		// Existing Enter key handling
-		if (pMsg->wParam == VK_RETURN)
+		// Check for Delete key
+		if (pMsg->wParam == VK_DELETE)
+		{
+			if (m_treeCtrl.GetEditControl() != nullptr)
+			{
+				return FALSE;
+			}
+
+			DeleteSelectedItem();
+			return TRUE;
+		}
+
+		// Check for F2 (rename)
+		if (pMsg->wParam == VK_F2)
 		{
 			HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
 			if (hSelectedItem)
 			{
-				CString * pFilePath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
-				if (pFilePath)
-				{
-					if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) == _T('\\'))
-					{
-						UINT state = m_treeCtrl.GetItemState(hSelectedItem, TVIS_EXPANDED);
-						if (state & TVIS_EXPANDED)
-						{
-							m_treeCtrl.Expand(hSelectedItem, TVE_COLLAPSE);
-						}
-						else
-						{
-							m_treeCtrl.Expand(hSelectedItem, TVE_EXPAND);
-						}
-					}
-					else
-					{
-						ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
-					}
-				}
+				m_treeCtrl.EditLabel(hSelectedItem);
 			}
 			return TRUE;
 		}
@@ -134,6 +344,37 @@ BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 
 	return CDialogEx::PreTranslateMessage(pMsg);
 }
+
+HTREEITEM CProjectTreeDlg::FindItemParent(HTREEITEM hItem, const CString & pathToFind)
+{
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+	while (hChild)
+	{
+		CString * pItemPath = (CString *)m_treeCtrl.GetItemData(hChild);
+		if (pItemPath)
+		{
+			CString itemPathNorm = *pItemPath;
+			CString findPathNorm = pathToFind;
+			itemPathNorm.TrimRight(_T("\\"));
+			findPathNorm.TrimRight(_T("\\"));
+
+			if (itemPathNorm == findPathNorm)
+			{
+				// Found it, return current item as parent
+				return hItem;
+			}
+		}
+
+		// Recurse into child folders
+		HTREEITEM hFound = FindItemParent(hChild, pathToFind);
+		if (hFound)
+			return hFound;
+
+		hChild = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+	}
+	return nullptr;
+}
+
 
 afx_msg void CProjectTreeDlg::OnClose()
 {
@@ -168,14 +409,15 @@ BEGIN_MESSAGE_MAP(CProjectTreeDlg, CDialogEx)
 	ON_WM_CLOSE()
 	ON_NOTIFY(TVN_SELCHANGED, IDC_TREE2, &CProjectTreeDlg::OnTvnSelchangedTree2)
 	ON_NOTIFY(NM_DBLCLK, IDC_TREE_CONTROL, OnTreeDblClick)
-	ON_NOTIFY(TVN_ITEMEXPANDING, IDC_TREE_CONTROL, OnTreeExpanding)
 	ON_WM_CTLCOLOR()
 	ON_NOTIFY(NM_RCLICK, IDC_TREE_CONTROL, OnTreeRightClick)
 	ON_NOTIFY(TVN_BEGINDRAG, IDC_TREE_CONTROL, OnTreeBeginDrag)
 	ON_NOTIFY(TVN_BEGINLABELEDIT, IDC_TREE_CONTROL, OnTreeBeginLabelEdit)
 	ON_NOTIFY(TVN_ENDLABELEDIT, IDC_TREE_CONTROL, OnTreeEndLabelEdit)
+	ON_NOTIFY(TVN_ITEMEXPANDING, IDC_TREE_CONTROL, OnTreeItemExpanding)
 	ON_WM_MOUSEMOVE()
 	ON_WM_LBUTTONUP()
+	ON_MESSAGE(WM_RESTORE_EXPANDED_STATE, OnRestoreExpandedState)
 END_MESSAGE_MAP()
 
 #include <dwmapi.h>
@@ -359,7 +601,7 @@ void CProjectTreeDlg::PopulateTree()
 {
 	m_treeCtrl.DeleteAllItems();
 
-	m_rootPath = _T("D:\\kurt\\");
+	m_rootPath = _T("D:\\test-folder\\");
 	CString const includePath = m_rootPath + "include\\";
 	CString const shaderPath = m_rootPath + "shader_angle\\";
 	CString const srcPath = m_rootPath + "src\\";
@@ -393,85 +635,443 @@ void CProjectTreeDlg::PopulateTree()
 	HTREEITEM hSrc = m_treeCtrl.InsertItem(_T("src"), folderIcon, folderIcon);
 	m_treeCtrl.SetItemData(hSrc, (DWORD_PTR)new CString(srcPath));
 	m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hSrc);
+
+	// Add combined virtual view
+	HTREEITEM hCombined = m_treeCtrl.InsertItem(_T("Combined View"), folderIcon, folderIcon);
+	m_treeCtrl.SetItemData(hCombined, (DWORD_PTR)new CString(_T("VIRTUAL:COMBINED")));
+	m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hCombined);
 }
 
-void CProjectTreeDlg::LoadDirectoryContents(HTREEITEM hParent, const CString & strPath)
+void CProjectTreeDlg::LoadDirectoryContents(HTREEITEM hParent, const CString & folderPath)
 {
-	// Remove dummy item if it exists
-	HTREEITEM hFirstChild = m_treeCtrl.GetChildItem(hParent);
-	if (hFirstChild && m_treeCtrl.GetItemText(hFirstChild).IsEmpty())
+	// Remove dummy item
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hParent);
+	if (hChild && m_treeCtrl.GetItemText(hChild).IsEmpty())
 	{
-		m_treeCtrl.DeleteItem(hFirstChild);
+		m_treeCtrl.DeleteItem(hChild);
 	}
 
 	WIN32_FIND_DATA findData;
-	HANDLE hFind;
-	CString searchPath = strPath + _T("*.*");
-
-	hFind = FindFirstFile(searchPath, &findData);
+	HANDLE hFind = FindFirstFile(folderPath + _T("*"), &findData);
 
 	if (hFind == INVALID_HANDLE_VALUE)
 		return;
 
 	do
 	{
-		// Skip "." and ".."
-		if (_tcscmp(findData.cFileName, _T(".")) == 0 ||
-			_tcscmp(findData.cFileName, _T("..")) == 0)
-			continue;
-
-		CString fullPath = strPath + findData.cFileName;
-
-		// Get system icon for this item
-		SHFILEINFO sfi = {0};
-		SHGetFileInfo(fullPath, 0, &sfi, sizeof(SHFILEINFO),
-					 SHGFI_ICON | SHGFI_SMALLICON);
-
-		int iconIndex = m_imageList.Add(sfi.hIcon);
-		DestroyIcon(sfi.hIcon);
-
-		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		if (_tcscmp(findData.cFileName, _T(".")) != 0 &&
+			_tcscmp(findData.cFileName, _T("..")) != 0)
 		{
-			// It's a folder
-			HTREEITEM hFolder = m_treeCtrl.InsertItem(findData.cFileName, iconIndex, iconIndex, hParent);
-			m_treeCtrl.SetItemData(hFolder, (DWORD_PTR)new CString(fullPath + _T("\\")));
+			CString itemPath = folderPath + findData.cFileName;
+			bool isDir = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-			// Add dummy child so expand arrow appears
-			m_treeCtrl.InsertItem(_T(""), iconIndex, iconIndex, hFolder);
-		}
-		else
-		{
-			// It's a file
-			HTREEITEM hFile = m_treeCtrl.InsertItem(findData.cFileName, iconIndex, iconIndex, hParent);
-			m_treeCtrl.SetItemData(hFile, (DWORD_PTR)new CString(fullPath));
+			SHFILEINFO sfi = {0};
+			SHGetFileInfo(itemPath, findData.dwFileAttributes, &sfi, sizeof(SHFILEINFO),
+				SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+			int icon = m_imageList.Add(sfi.hIcon);
+			DestroyIcon(sfi.hIcon);
+
+			if (isDir)
+			{
+				itemPath += _T("\\");
+				HTREEITEM hDir = m_treeCtrl.InsertItem(findData.cFileName, icon, icon, hParent);
+				m_treeCtrl.SetItemData(hDir, (DWORD_PTR)new CString(itemPath));
+
+				// Check if subdirectory is empty
+				WIN32_FIND_DATA subFindData;
+				HANDLE hSubFind = FindFirstFile(itemPath + _T("*"), &subFindData);
+				bool hasItems = false;
+
+				if (hSubFind != INVALID_HANDLE_VALUE)
+				{
+					do
+					{
+						if (_tcscmp(subFindData.cFileName, _T(".")) != 0 &&
+							_tcscmp(subFindData.cFileName, _T("..")) != 0)
+						{
+							hasItems = true;
+							break;
+						}
+					} while (FindNextFile(hSubFind, &subFindData));
+					FindClose(hSubFind);
+				}
+
+				// Only add dummy if folder has contents
+				if (hasItems)
+				{
+					m_treeCtrl.InsertItem(_T(""), icon, icon, hDir);
+				}
+			}
+			else
+			{
+				HTREEITEM hFile = m_treeCtrl.InsertItem(findData.cFileName, icon, icon, hParent);
+				m_treeCtrl.SetItemData(hFile, (DWORD_PTR)new CString(itemPath));
+			}
 		}
 	} while (FindNextFile(hFind, &findData));
 
 	FindClose(hFind);
 }
 
-afx_msg void CProjectTreeDlg::OnTreeExpanding(NMHDR * pNMHDR, LRESULT * pResult)
+afx_msg void CProjectTreeDlg::OnTreeItemExpanding(NMHDR * pNMHDR, LRESULT * pResult)
 {
 	LPNMTREEVIEW pNMTreeView = reinterpret_cast<LPNMTREEVIEW>(pNMHDR);
+	HTREEITEM hItem = pNMTreeView->itemNew.hItem;
 
-	if (pNMTreeView->action == TVE_EXPAND)
+	CString * pPath = (CString *)m_treeCtrl.GetItemData(hItem);
+	if (pPath)
 	{
-		HTREEITEM hItem = pNMTreeView->itemNew.hItem;
-		CString * pPath = (CString *)m_treeCtrl.GetItemData(hItem);
-
-		if (pPath)
+		// Check if already loaded (no dummy child or has actual content)
+		HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+		if (!hChild)
 		{
-			// Check if already loaded (has real children, not dummy)
-			HTREEITEM hFirstChild = m_treeCtrl.GetChildItem(hItem);
-			if (hFirstChild && m_treeCtrl.GetItemText(hFirstChild).IsEmpty())
-			{
-				// Still has dummy, so load for real
-				LoadDirectoryContents(hItem, *pPath);
-			}
+			*pResult = 0;
+			return;  // No children
+		}
+
+		CString childText = m_treeCtrl.GetItemText(hChild);
+		if (!childText.IsEmpty())
+		{
+			*pResult = 0;
+			return;  // Already loaded - don't reload
+		}
+
+		// Has dummy child, so load content
+		if (*pPath == _T("VIRTUAL:COMBINED"))
+		{
+			LoadCombinedView(hItem);
+		}
+		else if (pPath->Find(_T("VIRTUAL:COMBINED:")) == 0)
+		{
+			CString subPath = pPath->Mid(17);
+			CString srcDir = m_rootPath + _T("src\\");
+			CString includeDir = m_rootPath + _T("include\\");
+			LoadCombinedDirectory(hItem, srcDir, includeDir, subPath + _T("\\"));
+		}
+		else if (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'))
+		{
+			LoadDirectoryContents(hItem, *pPath);
 		}
 	}
 
 	*pResult = 0;
+}
+
+
+void CProjectTreeDlg::LoadCombinedView(HTREEITEM hParent)
+{
+	// Remove dummy item
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hParent);
+	if (hChild && m_treeCtrl.GetItemText(hChild).IsEmpty())
+	{
+		m_treeCtrl.DeleteItem(hChild);
+	}
+
+	CString srcPath = m_rootPath + _T("src\\");
+	CString includePath = m_rootPath + _T("include\\");
+
+	// Load the combined directory recursively
+	LoadCombinedDirectory(hParent, srcPath, includePath, _T(""));
+}
+
+void CProjectTreeDlg::LoadCombinedDirectory(HTREEITEM hParent, const CString & srcDir,
+	const CString & includeDir, const CString & relativePath)
+{
+	// Remove dummy item FIRST
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hParent);
+	if (hChild && m_treeCtrl.GetItemText(hChild).IsEmpty())
+	{
+		m_treeCtrl.DeleteItem(hChild);
+	}
+
+	std::set<CString> allFiles;
+	std::set<CString> folders;
+	WIN32_FIND_DATA findData;
+
+	// Scan src subdirectory
+	HANDLE hFind = FindFirstFile(srcDir + relativePath + _T("*"), &findData);
+	if (hFind != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			if (_tcscmp(findData.cFileName, _T(".")) != 0 &&
+				_tcscmp(findData.cFileName, _T("..")) != 0)
+			{
+				if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				{
+					folders.insert(findData.cFileName);
+				}
+				else
+				{
+					allFiles.insert(findData.cFileName);
+				}
+			}
+		} while (FindNextFile(hFind, &findData));
+		FindClose(hFind);
+	}
+
+	// Scan include subdirectory
+	hFind = FindFirstFile(includeDir + relativePath + _T("*"), &findData);
+	if (hFind != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			if (_tcscmp(findData.cFileName, _T(".")) != 0 &&
+				_tcscmp(findData.cFileName, _T("..")) != 0)
+			{
+				if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				{
+					folders.insert(findData.cFileName);
+				}
+				else
+				{
+					allFiles.insert(findData.cFileName);
+				}
+			}
+		} while (FindNextFile(hFind, &findData));
+		FindClose(hFind);
+	}
+
+	// Process directories first
+	for (const auto & folderName : folders)
+	{
+		CString srcFolderPath = srcDir + relativePath + folderName;
+
+		SHFILEINFO sfi = {0};
+		SHGetFileInfo(srcFolderPath, FILE_ATTRIBUTE_DIRECTORY, &sfi,
+			sizeof(SHFILEINFO), SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+		int folderIcon = m_imageList.Add(sfi.hIcon);
+		DestroyIcon(sfi.hIcon);
+
+		HTREEITEM hDir = m_treeCtrl.InsertItem(folderName, folderIcon, folderIcon, hParent);
+		m_treeCtrl.SetItemData(hDir, (DWORD_PTR)new CString(_T("VIRTUAL:COMBINED:") + relativePath + folderName));
+
+		// Check if folder is empty before adding dummy
+		CString srcSubPath = srcFolderPath + _T("\\");
+		CString includeSubPath = includeDir + relativePath + folderName + _T("\\");
+
+		WIN32_FIND_DATA subFindData;
+		bool hasItems = false;
+
+		HANDLE hSubFind = FindFirstFile(srcSubPath + _T("*"), &subFindData);
+		if (hSubFind != INVALID_HANDLE_VALUE)
+		{
+			do
+			{
+				if (_tcscmp(subFindData.cFileName, _T(".")) != 0 &&
+					_tcscmp(subFindData.cFileName, _T("..")) != 0)
+				{
+					hasItems = true;
+					break;
+				}
+			} while (FindNextFile(hSubFind, &subFindData));
+			FindClose(hSubFind);
+		}
+
+		if (!hasItems)
+		{
+			hSubFind = FindFirstFile(includeSubPath + _T("*"), &subFindData);
+			if (hSubFind != INVALID_HANDLE_VALUE)
+			{
+				do
+				{
+					if (_tcscmp(subFindData.cFileName, _T(".")) != 0 &&
+						_tcscmp(subFindData.cFileName, _T("..")) != 0)
+					{
+						hasItems = true;
+						break;
+					}
+				} while (FindNextFile(hSubFind, &subFindData));
+				FindClose(hSubFind);
+			}
+		}
+
+		// Only add dummy if folder has contents
+		if (hasItems)
+		{
+			m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hDir);
+		}
+	}
+
+	// Process files
+	for (const auto & fileName : allFiles)
+	{
+		CString srcFilePath = srcDir + relativePath + fileName;
+		CString includeFilePath = includeDir + relativePath + fileName;
+
+		CString filePath = srcFilePath;
+		if (!PathFileExists(srcFilePath) && PathFileExists(includeFilePath))
+		{
+			filePath = includeFilePath;
+		}
+
+		SHFILEINFO sfi = {0};
+		SHGetFileInfo(filePath, 0, &sfi, sizeof(SHFILEINFO),
+			SHGFI_ICON | SHGFI_SMALLICON);
+		int fileIcon = m_imageList.Add(sfi.hIcon);
+		DestroyIcon(sfi.hIcon);
+
+		HTREEITEM hFile = m_treeCtrl.InsertItem(fileName, fileIcon, fileIcon, hParent);
+		m_treeCtrl.SetItemData(hFile, (DWORD_PTR)new CString(filePath));
+	}
+}
+
+void CProjectTreeDlg::LoadCombinedSubfolder(HTREEITEM hParent, const CString & folderName)
+{
+	// Remove dummy
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hParent);
+	if (hChild && m_treeCtrl.GetItemText(hChild).IsEmpty())
+	{
+		m_treeCtrl.DeleteItem(hChild);
+	}
+
+	CString srcPath = m_rootPath + _T("src\\") + folderName + _T("\\");
+	CString includePath = m_rootPath + _T("include\\") + folderName + _T("\\");
+
+	std::map<CString, std::pair<CString, CString>> fileMap;
+
+	// Scan src for .cpp files
+	WIN32_FIND_DATA findData;
+	HANDLE hFind = FindFirstFile(srcPath + _T("*.cpp"), &findData);
+	if (hFind != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			CString fileName = findData.cFileName;
+			CString baseName = fileName.Left(fileName.ReverseFind(_T('.')));
+			fileMap[baseName].first = srcPath + fileName;
+		} while (FindNextFile(hFind, &findData));
+		FindClose(hFind);
+	}
+
+	// Scan include for .hpp files
+	hFind = FindFirstFile(includePath + _T("*.hpp"), &findData);
+	if (hFind != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			CString fileName = findData.cFileName;
+			CString baseName = fileName.Left(fileName.ReverseFind(_T('.')));
+			fileMap[baseName].second = includePath + fileName;
+		} while (FindNextFile(hFind, &findData));
+		FindClose(hFind);
+	}
+
+	// Create grouped tree items
+	for (const auto & pair : fileMap)
+	{
+		CString groupName = pair.first;
+		HTREEITEM hGroup = m_treeCtrl.InsertItem(groupName, 0, 0, hParent);
+
+		if (!pair.second.first.IsEmpty())
+		{
+			SHFILEINFO sfi = {0};
+			SHGetFileInfo(pair.second.first, 0, &sfi, sizeof(SHFILEINFO),
+						 SHGFI_ICON | SHGFI_SMALLICON);
+			int cppIcon = m_imageList.Add(sfi.hIcon);
+			DestroyIcon(sfi.hIcon);
+
+			HTREEITEM hCpp = m_treeCtrl.InsertItem(groupName + _T(".cpp"), cppIcon, cppIcon, hGroup);
+			m_treeCtrl.SetItemData(hCpp, (DWORD_PTR)new CString(pair.second.first));
+		}
+
+		if (!pair.second.second.IsEmpty())
+		{
+			SHFILEINFO sfi = {0};
+			SHGetFileInfo(pair.second.second, 0, &sfi, sizeof(SHFILEINFO),
+						 SHGFI_ICON | SHGFI_SMALLICON);
+			int hppIcon = m_imageList.Add(sfi.hIcon);
+			DestroyIcon(sfi.hIcon);
+
+			HTREEITEM hHpp = m_treeCtrl.InsertItem(groupName + _T(".hpp"), hppIcon, hppIcon, hGroup);
+			m_treeCtrl.SetItemData(hHpp, (DWORD_PTR)new CString(pair.second.second));
+		}
+
+		m_treeCtrl.Expand(hGroup, TVE_EXPAND);
+	}
+}
+
+void CProjectTreeDlg::RefreshVirtualCombinedView()
+{
+	// Find the "Combined View" root item
+	HTREEITEM hCombined = m_treeCtrl.GetRootItem();
+	while (hCombined)
+	{
+		CString itemText = m_treeCtrl.GetItemText(hCombined);
+		if (itemText == _T("Combined View"))
+		{
+			// Collapse it first
+			m_treeCtrl.Expand(hCombined, TVE_COLLAPSE);
+
+			// Delete all children
+			HTREEITEM hChild = m_treeCtrl.GetChildItem(hCombined);
+			while (hChild)
+			{
+				HTREEITEM hNext = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+				m_treeCtrl.DeleteItem(hChild);
+				hChild = hNext;
+			}
+
+			// Re-add dummy with proper icon
+			SHFILEINFO sfi = {0};
+			SHGetFileInfo(_T("C:\\"), FILE_ATTRIBUTE_DIRECTORY, &sfi,
+				sizeof(SHFILEINFO), SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+			int folderIcon = m_imageList.Add(sfi.hIcon);
+			DestroyIcon(sfi.hIcon);
+
+			m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hCombined);
+			break;
+		}
+		hCombined = m_treeCtrl.GetNextItem(hCombined, TVGN_NEXT);
+	}
+}
+
+void CProjectTreeDlg::SaveExpandedStateRecursive(HTREEITEM hItem, std::set<CString> & expandedPaths)
+{
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+	while (hChild)
+	{
+		UINT state = m_treeCtrl.GetItemState(hChild, TVIS_EXPANDED);
+		if (state & TVIS_EXPANDED)
+		{
+			CString * pPath = (CString *)m_treeCtrl.GetItemData(hChild);
+			if (pPath)
+			{
+				expandedPaths.insert(*pPath);
+			}
+			SaveExpandedStateRecursive(hChild, expandedPaths);
+		}
+		hChild = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+	}
+}
+
+void CProjectTreeDlg::RestoreExpandedStateRecursive(HTREEITEM hItem, const std::set<CString> & expandedPaths)
+{
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+	while (hChild)
+	{
+		CString * pPath = (CString *)m_treeCtrl.GetItemData(hChild);
+		if (pPath && expandedPaths.find(*pPath) != expandedPaths.end())
+		{
+			m_treeCtrl.Expand(hChild, TVE_EXPAND);
+			RestoreExpandedStateRecursive(hChild, expandedPaths);
+		}
+		hChild = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+	}
+}
+
+LRESULT CProjectTreeDlg::OnRestoreExpandedState(WPARAM wParam, LPARAM lParam)
+{
+	HTREEITEM hCombined = (HTREEITEM)wParam;
+	std::set<CString> * pExpandedPaths = (std::set<CString>*)lParam;
+
+	if (pExpandedPaths)
+	{
+		RestoreExpandedStateRecursive(hCombined, *pExpandedPaths);
+		delete pExpandedPaths;
+	}
+
+	return 0;
 }
 
 afx_msg void CProjectTreeDlg::OnTreeDblClick(NMHDR * pNMHDR, LRESULT * pResult)
@@ -651,47 +1251,261 @@ afx_msg void CProjectTreeDlg::OnTreeBeginLabelEdit(NMHDR * pNMHDR, LRESULT * pRe
 	m_hRenameItem = pTVDispInfo->item.hItem;
 	m_originalName = m_treeCtrl.GetItemText(m_hRenameItem);
 
+	// Get the edit control
+	CEdit * pEdit = m_treeCtrl.GetEditControl();
+	if (pEdit)
+	{
+		// Check if it's a file (not a folder)
+		CString * pPath = (CString *)m_treeCtrl.GetItemData(m_hRenameItem);
+		bool isFolder = (pPath && !pPath->IsEmpty() &&
+						pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
+
+		if (!isFolder)
+		{
+			// Find the last dot for the extension
+			CString itemText = m_originalName;
+			int dotPos = itemText.ReverseFind(_T('.'));
+
+			if (dotPos > 0)  // Found extension and it's not at the start
+			{
+				// Select only the filename (before the extension)
+				pEdit->SetSel(0, dotPos);
+			}
+			else
+			{
+				// No extension, select all
+				pEdit->SetSel(0, -1);
+			}
+		}
+		else
+		{
+			// Folder, select all
+			pEdit->SetSel(0, -1);
+		}
+	}
+
 	*pResult = 0;  // Allow editing
 }
 
 afx_msg void CProjectTreeDlg::OnTreeEndLabelEdit(NMHDR * pNMHDR, LRESULT * pResult)
 {
 	LPNMTVDISPINFO pTVDispInfo = reinterpret_cast<LPNMTVDISPINFO>(pNMHDR);
+	*pResult = 0;
 
-	*pResult = 0;  // Don't accept edit by default
-
-	if (pTVDispInfo->item.pszText == nullptr)
-		return;  // Edit was cancelled
+	if (!pTVDispInfo->item.pszText)
+		return;
 
 	CString newName = pTVDispInfo->item.pszText;
 	if (newName.IsEmpty())
-		return;  // Empty name not allowed
+		return;
 
 	CString * pOldPath = (CString *)m_treeCtrl.GetItemData(m_hRenameItem);
 	if (!pOldPath)
 		return;
 
-	// Build new path
-	int lastBackslash = pOldPath->ReverseFind(_T('\\'));
-	CString newPath = pOldPath->Left(lastBackslash + 1) + newName;
+	// Check if this item is in the virtual view by checking parent hierarchy
+	bool isVirtualView = false;
+	HTREEITEM hParent = m_treeCtrl.GetParentItem(m_hRenameItem);
+	while (hParent)
+	{
+		CString parentText = m_treeCtrl.GetItemText(hParent);
+		if (parentText == _T("Combined View"))
+		{
+			isVirtualView = true;
+			break;
+		}
 
-	// Handle folder vs file
+		// Also check if parent has VIRTUAL marker
+		CString * pParentPath = (CString *)m_treeCtrl.GetItemData(hParent);
+		if (pParentPath && pParentPath->Find(_T("VIRTUAL:COMBINED")) == 0)
+		{
+			isVirtualView = true;
+			break;
+		}
+
+		hParent = m_treeCtrl.GetParentItem(hParent);
+	}
+
+	// Determine if it's a folder
 	bool isFolder = (pOldPath->GetAt(pOldPath->GetLength() - 1) == _T('\\'));
+
+	// Build the path to rename FROM
+	CString oldPathForMove = *pOldPath;
+
+	// For virtual view, path is already the real path for files
+	// We don't need to convert it
+
+	if (isFolder)
+		oldPathForMove.TrimRight(_T("\\"));
+
+	// Build new path
+	int lastBackslash = oldPathForMove.ReverseFind(_T('\\'));
+	CString newPath = oldPathForMove.Left(lastBackslash + 1) + newName;
 	if (isFolder)
 		newPath += _T("\\");
 
 	// Rename the actual file/folder
-	if (MoveFile(*pOldPath, newPath))
+	CString newPathForMove = newPath;
+	if (isFolder)
+		newPathForMove.TrimRight(_T("\\"));
+
+	if (MoveFile(oldPathForMove, newPathForMove))
 	{
-		// Update tree item
 		m_treeCtrl.SetItemText(m_hRenameItem, newName);
+
+		// Free old memory and store the new path
+		delete pOldPath;
 		m_treeCtrl.SetItemData(m_hRenameItem, (DWORD_PTR)new CString(newPath));
 
-		*pResult = 1;  // Accept the edit
+		*pResult = 1;
+
+		// Update the corresponding view
+		if (isVirtualView)
+		{
+			UpdateFileInRealView(oldPathForMove, newPathForMove, newName);
+		}
+		else
+		{
+			UpdateFileInVirtualView(oldPathForMove, newPathForMove, newName);
+		}
 	}
 	else
 	{
-		MessageBox(_T("Failed to rename file/folder"), _T("Error"));
+		DWORD error = GetLastError();
+		CString msg;
+		msg.Format(_T("Failed to rename file/folder. Error: %d"), error);
+		MessageBox(msg, _T("Error"), MB_OK | MB_ICONERROR);
+	}
+}
+
+void CProjectTreeDlg::UpdateFileInVirtualView(const CString & oldPath, const CString & newPath, const CString & newName)
+{
+	// Find Combined View root
+	HTREEITEM hRoot = m_treeCtrl.GetRootItem();
+	while (hRoot)
+	{
+		if (m_treeCtrl.GetItemText(hRoot) == _T("Combined View"))
+		{
+			SearchAndUpdateFile(hRoot, oldPath, newPath, newName);
+			break;
+		}
+		hRoot = m_treeCtrl.GetNextItem(hRoot, TVGN_NEXT);
+	}
+}
+
+void CProjectTreeDlg::UpdateFileInRealView(const CString & oldPath, const CString & newPath, const CString & newName)
+{
+	// Find root items (include, src, shader_angle, etc.)
+	HTREEITEM hRoot = m_treeCtrl.GetRootItem();
+	while (hRoot)
+	{
+		CString itemText = m_treeCtrl.GetItemText(hRoot);
+		if (itemText != _T("Combined View"))
+		{
+			SearchAndUpdateFile(hRoot, oldPath, newPath, newName);
+		}
+		hRoot = m_treeCtrl.GetNextItem(hRoot, TVGN_NEXT);
+	}
+}
+
+void CProjectTreeDlg::SearchAndUpdateFile(HTREEITEM hItem, const CString & oldPath, const CString & newPath, const CString & newName)
+{
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+	while (hChild)
+	{
+		CString * pItemPath = (CString *)m_treeCtrl.GetItemData(hChild);
+		if (pItemPath)
+		{
+			bool isMatch = false;
+
+			// Extract the relative path from virtual marker
+			CString virtualRelativePath;
+
+			// Direct path match
+			if (*pItemPath == oldPath)
+			{
+				isMatch = true;
+			}
+			// Virtual folder match - check if the virtual path corresponds to the real path
+			else if (pItemPath->Find(_T("VIRTUAL:COMBINED:")) == 0)
+			{
+				// Extract the relative path from virtual marker
+				virtualRelativePath = pItemPath->Mid(17);  // Skip "VIRTUAL:COMBINED:"
+
+				// Check if oldPath ends with this relative path
+				if (oldPath.Find(virtualRelativePath) != -1)
+				{
+					isMatch = true;
+				}
+			}
+
+			if (isMatch)
+			{
+				// Found it! Update the name
+				m_treeCtrl.SetItemText(hChild, newName);
+
+				// Update the path appropriately
+				if (pItemPath->Find(_T("VIRTUAL:COMBINED:")) == 0)
+				{
+					// Virtual folder - reconstruct virtual path with new name
+					CString newVirtualPath = _T("VIRTUAL:COMBINED:");
+
+					// Extract everything except the last component (old folder name)
+					int lastBackslash = virtualRelativePath.ReverseFind(_T('\\'));
+					if (lastBackslash != -1)
+					{
+						newVirtualPath += virtualRelativePath.Left(lastBackslash + 1) + newName;
+					}
+					else
+					{
+						newVirtualPath += newName;
+					}
+
+					delete pItemPath;
+					m_treeCtrl.SetItemData(hChild, (DWORD_PTR)new CString(newVirtualPath));
+				}
+				else
+				{
+					// Real path - just update normally
+					delete pItemPath;
+					m_treeCtrl.SetItemData(hChild, (DWORD_PTR)new CString(newPath));
+				}
+				return;
+			}
+		}
+
+		// Recurse into child folders
+		SearchAndUpdateFile(hChild, oldPath, newPath, newName);
+		hChild = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+	}
+}
+
+void CProjectTreeDlg::SearchAndDeleteItem(HTREEITEM hItem, const CString & pathToDelete)
+{
+	HTREEITEM hChild = m_treeCtrl.GetChildItem(hItem);
+	while (hChild)
+	{
+		CString * pItemPath = (CString *)m_treeCtrl.GetItemData(hChild);
+		if (pItemPath)
+		{
+			// Normalize paths for comparison
+			CString itemPathNorm = *pItemPath;
+			CString deletePathNorm = pathToDelete;
+			itemPathNorm.TrimRight(_T("\\"));
+			deletePathNorm.TrimRight(_T("\\"));
+
+			if (itemPathNorm == deletePathNorm)
+			{
+				// Found it! Delete the item
+				delete pItemPath;
+				m_treeCtrl.DeleteItem(hChild);
+				return;
+			}
+		}
+
+		// Recurse into child folders
+		SearchAndDeleteItem(hChild, pathToDelete);
+		hChild = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
 	}
 }
 
@@ -811,11 +1625,151 @@ afx_msg void CProjectTreeDlg::OnLButtonUp(UINT nFlags, CPoint point)
 			m_pDragImageList = nullptr;
 		}
 
+		// Convert point to tree control coordinates
+		CPoint treePoint = point;
+		ClientToScreen(&treePoint);
+		m_treeCtrl.ScreenToClient(&treePoint);
+
+		// Get the drop target item
+		UINT flags;
+		HTREEITEM hDropTarget = m_treeCtrl.HitTest(treePoint, &flags);
+
+		// Check if we have a valid drop target and it's on an item
+		if (hDropTarget && (flags & TVHT_ONITEM) && hDropTarget != m_hDragItem)
+		{
+			// Check if drag source and drop target are in different view types
+			bool sourceIsVirtual = IsItemInVirtualView(m_hDragItem);
+			bool targetIsVirtual = IsItemInVirtualView(hDropTarget);
+
+			if (sourceIsVirtual != targetIsVirtual)
+			{
+				MessageBox(_T("Cannot drag items between real folders and the Combined View."),
+					_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+				m_hDragItem = nullptr;
+				CDialogEx::OnLButtonUp(nFlags, point);
+				return;
+			}
+
+			CString * pSourcePath = (CString *)m_treeCtrl.GetItemData(m_hDragItem);
+			CString * pTargetPath = (CString *)m_treeCtrl.GetItemData(hDropTarget);
+
+			if (pSourcePath && pTargetPath)
+			{
+				// Target must be a folder
+				bool isTargetFolder = (pTargetPath->GetAt(pTargetPath->GetLength() - 1) == _T('\\'));
+				if (!isTargetFolder)
+				{
+					// If target is a file, use its parent folder
+					hDropTarget = m_treeCtrl.GetParentItem(hDropTarget);
+					if (hDropTarget)
+					{
+						pTargetPath = (CString *)m_treeCtrl.GetItemData(hDropTarget);
+						if (pTargetPath)
+							isTargetFolder = true;
+					}
+				}
+
+				if (isTargetFolder && pTargetPath)
+				{
+					// Check that we're not trying to move into a descendant
+					HTREEITEM hParent = hDropTarget;
+					bool isDescendant = false;
+					while (hParent)
+					{
+						if (hParent == m_hDragItem)
+						{
+							isDescendant = true;
+							break;
+						}
+						hParent = m_treeCtrl.GetParentItem(hParent);
+					}
+
+					if (!isDescendant)
+					{
+						// Extract filename from source
+						int lastBackslash = pSourcePath->ReverseFind(_T('\\'));
+						CString fileName;
+						if (lastBackslash >= 0)
+						{
+							fileName = pSourcePath->Mid(lastBackslash + 1);
+						}
+						else
+						{
+							fileName = *pSourcePath;
+						}
+
+						// Build new path
+						CString newPath = *pTargetPath + fileName;
+
+						// Check if source is a folder
+						bool isSourceFolder = (pSourcePath->GetAt(pSourcePath->GetLength() - 1) == _T('\\'));
+
+						// Move the file/folder
+						if (MoveFile(*pSourcePath, newPath))
+						{
+							// Remove source item from tree
+							m_treeCtrl.DeleteItem(m_hDragItem);
+
+							// Expand target and reload its contents
+							m_treeCtrl.Expand(hDropTarget, TVE_EXPAND);
+
+							// Delete children and reload
+							HTREEITEM hChild = m_treeCtrl.GetChildItem(hDropTarget);
+							while (hChild)
+							{
+								HTREEITEM hNext = m_treeCtrl.GetNextItem(hChild, TVGN_NEXT);
+								m_treeCtrl.DeleteItem(hChild);
+								hChild = hNext;
+							}
+
+							LoadDirectoryContents(hDropTarget, *pTargetPath);
+						}
+						else
+						{
+							DWORD error = GetLastError();
+							CString msg;
+							msg.Format(_T("Failed to move file/folder. Error code: %d"), error);
+							MessageBox(msg, _T("Error"), MB_OK | MB_ICONERROR);
+						}
+					}
+					else
+					{
+						MessageBox(_T("Cannot move a folder into itself or its subfolder"),
+								  _T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+					}
+				}
+			}
+		}
+
 		m_hDragItem = nullptr;
 	}
 
 	CDialogEx::OnLButtonUp(nFlags, point);
 }
+
+
+bool CProjectTreeDlg::IsItemInVirtualView(HTREEITEM hItem)
+{
+	HTREEITEM hParent = hItem;
+	while (hParent)
+	{
+		CString text = m_treeCtrl.GetItemText(hParent);
+		if (text == _T("Combined View"))
+		{
+			return true;
+		}
+
+		CString * pPath = (CString *)m_treeCtrl.GetItemData(hParent);
+		if (pPath && pPath->Find(_T("VIRTUAL:COMBINED")) == 0)
+		{
+			return true;
+		}
+
+		hParent = m_treeCtrl.GetParentItem(hParent);
+	}
+	return false;
+}
+
 
 void CProjectTreeDlg::CreateNewFolder()
 {
@@ -827,18 +1781,23 @@ void CProjectTreeDlg::CreateNewFolder()
 	if (!pPath)
 		return;
 
+	if (pPath->Find(_T("VIRTUAL:COMBINED")) == 0)
+	{
+		MessageBox(_T("Cannot create folders in the Combined View. Use src or include folders directly."),
+			_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+		return;
+	}
+
 	// Determine the parent folder
 	CString parentFolder;
 	bool isFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
 
 	if (isFolder)
 	{
-		// Selected item is a folder, create new folder inside it
 		parentFolder = *pPath;
 	}
 	else
 	{
-		// Selected item is a file, create new folder in its parent directory
 		int lastBackslash = pPath->ReverseFind(_T('\\'));
 		if (lastBackslash != -1)
 		{
@@ -846,37 +1805,39 @@ void CProjectTreeDlg::CreateNewFolder()
 		}
 		else
 		{
-			return;  // Can't determine parent
+			return;
 		}
 	}
 
 	// Find a unique folder name
 	CString newFolderName = _T("New Folder");
-	CString newFolderPath = parentFolder + newFolderName;
+	CString newFolderPath = parentFolder + newFolderName + _T("\\");
 	int counter = 1;
 
 	while (PathFileExists(newFolderPath))
 	{
 		newFolderName.Format(_T("New Folder (%d)"), counter++);
-		newFolderPath = parentFolder + newFolderName;
+		newFolderPath = parentFolder + newFolderName + _T("\\");
 	}
 
-	// Create the directory
-	if (CreateDirectory(newFolderPath, NULL))
+	// Create the directory (remove trailing backslash for CreateDirectory)
+	CString folderToCreate = newFolderPath;
+	folderToCreate.TrimRight(_T("\\"));
+
+	if (CreateDirectory(folderToCreate, NULL))
 	{
-		// Add to tree
 		HTREEITEM hParentItem = isFolder ? hSelectedItem : m_treeCtrl.GetParentItem(hSelectedItem);
 
 		// Get folder icon
 		SHFILEINFO sfi = {0};
-		SHGetFileInfo(newFolderPath, FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(SHFILEINFO),
-					 SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+		SHGetFileInfo(folderToCreate, FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(SHFILEINFO),
+			SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
 		int folderIcon = m_imageList.Add(sfi.hIcon);
 		DestroyIcon(sfi.hIcon);
 
-		// Insert new folder item
+		// Insert new folder item with path INCLUDING trailing backslash
 		HTREEITEM hNewFolder = m_treeCtrl.InsertItem(newFolderName, folderIcon, folderIcon, hParentItem);
-		m_treeCtrl.SetItemData(hNewFolder, (DWORD_PTR)new CString(newFolderPath + _T("\\")));
+		m_treeCtrl.SetItemData(hNewFolder, (DWORD_PTR)new CString(newFolderPath));
 		m_treeCtrl.InsertItem(_T(""), folderIcon, folderIcon, hNewFolder);
 
 		// Expand parent and select new folder
@@ -885,12 +1846,15 @@ void CProjectTreeDlg::CreateNewFolder()
 
 		// Start editing the name
 		m_treeCtrl.EditLabel(hNewFolder);
+
+		RefreshVirtualCombinedView();
 	}
 	else
 	{
 		MessageBox(_T("Failed to create folder"), _T("Error"), MB_OK | MB_ICONERROR);
 	}
 }
+
 
 void CProjectTreeDlg::CreateNewFile()
 {
@@ -901,6 +1865,13 @@ void CProjectTreeDlg::CreateNewFile()
 	CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
 	if (!pPath)
 		return;
+
+	if (pPath->Find(_T("VIRTUAL:COMBINED")) == 0)
+	{
+		MessageBox(_T("Cannot create files in the Combined View. Use src or include folders directly."),
+			_T("Invalid Operation"), MB_OK | MB_ICONWARNING);
+		return;
+	}
 
 	// Determine the parent folder
 	CString parentFolder;
@@ -964,10 +1935,79 @@ void CProjectTreeDlg::CreateNewFile()
 
 		// Start editing the name
 		m_treeCtrl.EditLabel(hNewFile);
+
+		RefreshVirtualCombinedView();
 	}
 	else
 	{
 		MessageBox(_T("Failed to create file"), _T("Error"), MB_OK | MB_ICONERROR);
+	}
+}
+
+void CProjectTreeDlg::DeleteSelectedItem()
+{
+	HTREEITEM hSelectedItem = m_treeCtrl.GetSelectedItem();
+	if (!hSelectedItem)
+		return;
+
+	CString * pPath = (CString *)m_treeCtrl.GetItemData(hSelectedItem);
+	if (!pPath || pPath->IsEmpty())
+		return;
+
+	// Get item name for confirmation dialog
+	CString itemName = m_treeCtrl.GetItemText(hSelectedItem);
+	bool isFolder = (pPath->GetAt(pPath->GetLength() - 1) == _T('\\'));
+
+	// Show confirmation dialog
+	CString message;
+	if (isFolder)
+	{
+		message.Format(_T("Are you sure you want to delete the folder '%s' and all its contents?"), itemName);
+	}
+	else
+	{
+		message.Format(_T("Are you sure you want to delete '%s'?"), itemName);
+	}
+
+	int result = MessageBox(message, _T("Confirm Delete"), MB_YESNO | MB_ICONQUESTION);
+
+	if (result == IDYES)
+	{
+		BOOL success = FALSE;
+
+		if (isFolder)
+		{
+			// Delete folder recursively using SHFileOperation
+			SHFILEOPSTRUCT fileOp = {0};
+			fileOp.hwnd = GetSafeHwnd();
+			fileOp.wFunc = FO_DELETE;
+			fileOp.fFlags = FOF_NOCONFIRMATION | FOF_SILENT;
+
+			// Must be double null-terminated
+			TCHAR szPath[MAX_PATH + 1];
+			_tcscpy_s(szPath, MAX_PATH, *pPath);
+			szPath[pPath->GetLength()] = 0;
+			szPath[pPath->GetLength() + 1] = 0;
+
+			fileOp.pFrom = szPath;
+
+			success = (SHFileOperation(&fileOp) == 0);
+		}
+		else
+		{
+			// Delete file
+			success = DeleteFile(*pPath);
+		}
+
+		if (success)
+		{
+			// Remove from tree
+			m_treeCtrl.DeleteItem(hSelectedItem);
+		}
+		else
+		{
+			MessageBox(_T("Failed to delete item"), _T("Error"), MB_OK | MB_ICONERROR);
+		}
 	}
 }
 
