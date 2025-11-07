@@ -32,7 +32,8 @@ CProjectTreeDlg::CProjectTreeDlg(CWnd* pParent /*=nullptr*/)
 	m_hDragItem(nullptr),
 	m_pDragImageList(nullptr),
 	m_isCopiedItemFolder(false),
-	m_isCutOperation(false)
+	m_isCutOperation(false),
+	idePath{_T("C:/the-path-to-your-IDE/ide.exe")}
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -80,7 +81,7 @@ BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 					else
 					{
 						// It's a file, open it
-						ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
+						ShellExecute(nullptr, _T("open"), idePath, *pFilePath, nullptr, SW_SHOW);
 					}
 				}
 			}
@@ -1086,7 +1087,7 @@ afx_msg void CProjectTreeDlg::OnTreeDblClick(NMHDR * pNMHDR, LRESULT * pResult)
 			// Check if it's a file (doesn't end with backslash)
 			if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) != _T('\\'))
 			{
-				ShellExecute(nullptr, _T("open"), *pFilePath, nullptr, nullptr, SW_SHOW);
+				ShellExecute(nullptr, _T("open"), idePath, *pFilePath, nullptr, SW_SHOW);
 			}
 		}
 	}
@@ -1218,7 +1219,7 @@ afx_msg void CProjectTreeDlg::OnTreeRightClick(NMHDR * pNMHDR, LRESULT * pResult
 		break;
 	case 2:  // Open
 		if (pPath && !isFolder)
-			ShellExecute(nullptr, _T("open"), *pPath, nullptr, nullptr, SW_SHOW);
+			ShellExecute(nullptr, _T("open"), idePath, *pPath, nullptr, SW_SHOW);
 		break;
 	case 3:  // Copy Path
 		if (pPath)

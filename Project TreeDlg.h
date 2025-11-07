@@ -59,6 +59,7 @@ protected:
 	CString m_copiedItemPath;
 	bool m_isCopiedItemFolder;
 	bool m_isCutOperation;
+	CString idePath;
 
 
 
