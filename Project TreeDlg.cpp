@@ -421,6 +421,7 @@ BEGIN_MESSAGE_MAP(CProjectTreeDlg, CDialogEx)
 	ON_WM_ACTIVATE()
 	ON_MESSAGE(WM_RESTORE_EXPANDED_STATE, OnRestoreExpandedState)
 	ON_NOTIFY(TVN_SELCHANGED, IDC_TREE_CONTROL, &CProjectTreeDlg::OnTvnSelchangedTreeControl)
+	ON_NOTIFY(NM_CUSTOMDRAW, IDC_TREE_CONTROL, OnCustomDraw)
 END_MESSAGE_MAP()
 
 #include <dwmapi.h>
@@ -2032,6 +2033,94 @@ void CProjectTreeDlg::OnActivate(UINT nState, CWnd * pWndOther, BOOL bMinimized)
 	}
 
 	m_treeCtrl.Invalidate();
+}
+
+void CProjectTreeDlg::OnCustomDraw(NMHDR * pNMHDR, LRESULT * pResult)
+{
+	NMTVCUSTOMDRAW * pCustomDraw = (NMTVCUSTOMDRAW *)pNMHDR;
+
+	switch (pCustomDraw->nmcd.dwDrawStage)
+	{
+		case CDDS_PREPAINT:
+			*pResult = CDRF_NOTIFYITEMDRAW;
+			break;
+
+		case CDDS_ITEMPREPAINT:
+		{
+			HTREEITEM hItem = (HTREEITEM)pCustomDraw->nmcd.dwItemSpec;
+
+			// Check if this item is selected
+			if (pCustomDraw->nmcd.uItemState & CDIS_SELECTED)
+			{
+				pCustomDraw->nmcd.uItemState &= ~CDIS_SELECTED;
+
+				// Get item rectangle
+				CRect rect;
+				m_treeCtrl.GetItemRect(hItem, &rect, FALSE);
+
+				// Draw custom background
+				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
+				pDC->FillSolidRect(&rect, RGB(30, 30, 60));  // Black background
+
+
+				// Custom selection colors
+				pCustomDraw->clrText = RGB(205, 205, 205);  // White text
+				pCustomDraw->clrTextBk = RGB(0, 50, 0);  // Blue background (Windows 10 style)
+
+				*pResult = CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;  // Tell it we changed colors
+			}
+			else if (pCustomDraw->nmcd.uItemState & CDIS_HOT)
+			{
+				// Get item rectangle
+				CRect rect;
+				m_treeCtrl.GetItemRect(hItem, &rect, FALSE);
+
+				// Draw custom background
+				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
+				pDC->FillSolidRect(&rect, RGB(40, 40, 40));  // Black background
+
+				// Custom selection colors
+				pCustomDraw->clrText = RGB(205, 205, 205);  // White text
+				pCustomDraw->clrTextBk = RGB(100, 0, 0);  // Blue background (Windows 10 style)
+				*pResult = CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;  // Tell it we changed colors
+			}
+			else
+			{
+				*pResult = CDRF_DODEFAULT;  // Tell it we changed colors
+			}
+		}
+		break;
+
+		case CDDS_ITEMPOSTPAINT:
+		{
+			HTREEITEM hItem = (HTREEITEM)pCustomDraw->nmcd.dwItemSpec;
+
+			if (m_treeCtrl.GetSelectedItem() == hItem)
+			{
+				// Get full item rectangle
+				CRect rect;
+				m_treeCtrl.GetItemRect(hItem, &rect, TRUE);
+
+				// Draw custom background
+				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
+				CBrush brush(RGB(40, 40, 110));
+				pDC->FillRect(&rect, &brush);
+
+				// Redraw text
+				CString text = m_treeCtrl.GetItemText(hItem);
+				pDC->SetTextColor(RGB(205, 205, 205));
+				pDC->SetBkColor(RGB(0, 100, 0));
+				pDC->SetBkMode(TRANSPARENT);
+				pDC->DrawText(text, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+			}
+			*pResult = CDRF_DODEFAULT;
+		}
+		break;
+
+		default:
+			*pResult = CDRF_DODEFAULT;
+			break;
+	}
 }
 
 // If you add a minimize button to your dialog, you will need the code below
