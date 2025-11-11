@@ -106,6 +106,7 @@ protected:
 	afx_msg void OnLButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnLButtonUp(UINT nFlags, CPoint point);
 	afx_msg void OnMouseMove(UINT nFlags, CPoint point);
+	afx_msg void OnActivate(UINT nState, CWnd * pWndOther, BOOL bMinimized);
 	afx_msg LRESULT OnRestoreExpandedState(WPARAM wParam, LPARAM lParam);
 	#define WM_RESTORE_EXPANDED_STATE (WM_APP + 1)
 
@@ -113,4 +114,5 @@ protected:
 	DECLARE_MESSAGE_MAP()
 public:
 	afx_msg void OnTvnSelchangedTree2(NMHDR * pNMHDR, LRESULT * pResult);
+	afx_msg void OnTvnSelchangedTreeControl(NMHDR * pNMHDR, LRESULT * pResult);
 };

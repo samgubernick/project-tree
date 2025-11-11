@@ -4,7 +4,6 @@
 //
 #define IDD_PROJECT_TREE_DIALOG         102
 #define IDR_MAINFRAME                   128
-#define IDC_TREE2                       1001
 #define IDC_TREE_CONTROL                1001
 
 // Next default values for new objects

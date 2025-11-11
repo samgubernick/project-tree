@@ -408,7 +408,7 @@ BEGIN_MESSAGE_MAP(CProjectTreeDlg, CDialogEx)
 	ON_WM_QUERYDRAGICON()
 	ON_WM_SIZE()
 	ON_WM_CLOSE()
-	ON_NOTIFY(TVN_SELCHANGED, IDC_TREE2, &CProjectTreeDlg::OnTvnSelchangedTree2)
+	ON_NOTIFY(TVN_SELCHANGED, IDC_TREE_CONTROL, &CProjectTreeDlg::OnTvnSelchangedTree2)
 	ON_NOTIFY(NM_DBLCLK, IDC_TREE_CONTROL, OnTreeDblClick)
 	ON_WM_CTLCOLOR()
 	ON_NOTIFY(NM_RCLICK, IDC_TREE_CONTROL, OnTreeRightClick)
@@ -418,7 +418,9 @@ BEGIN_MESSAGE_MAP(CProjectTreeDlg, CDialogEx)
 	ON_NOTIFY(TVN_ITEMEXPANDING, IDC_TREE_CONTROL, OnTreeItemExpanding)
 	ON_WM_MOUSEMOVE()
 	ON_WM_LBUTTONUP()
+	ON_WM_ACTIVATE()
 	ON_MESSAGE(WM_RESTORE_EXPANDED_STATE, OnRestoreExpandedState)
+	ON_NOTIFY(TVN_SELCHANGED, IDC_TREE_CONTROL, &CProjectTreeDlg::OnTvnSelchangedTreeControl)
 END_MESSAGE_MAP()
 
 #include <dwmapi.h>
@@ -2012,6 +2014,26 @@ void CProjectTreeDlg::DeleteSelectedItem()
 	}
 }
 
+void CProjectTreeDlg::OnActivate(UINT nState, CWnd * pWndOther, BOOL bMinimized)
+{
+	CDialogEx::OnActivate(nState, pWndOther, bMinimized);
+
+	if (nState == WA_INACTIVE)
+	{
+		// Window is losing focus - darken the tree control
+		m_treeCtrl.SetBkColor(RGB(5, 5, 5));  // Light gray background
+		m_treeCtrl.SetTextColor(RGB(80, 80, 80)); // Darker gray text
+	}
+	else  // WA_ACTIVE or WA_CLICKACTIVE
+	{
+		// Window is gaining focus - restore normal colors
+		m_treeCtrl.SetBkColor(RGB(11, 11, 11));  // White background
+		m_treeCtrl.SetTextColor(RGB(160, 160, 160));      // Black text
+	}
+
+	m_treeCtrl.Invalidate();
+}
+
 // If you add a minimize button to your dialog, you will need the code below
 //  to draw the icon.  For MFC applications using the document/view model,
 //  this is automatically done for you by the framework.
@@ -2050,6 +2072,13 @@ HCURSOR CProjectTreeDlg::OnQueryDragIcon()
 
 
 void CProjectTreeDlg::OnTvnSelchangedTree2(NMHDR * pNMHDR, LRESULT * pResult)
+{
+	LPNMTREEVIEW pNMTreeView = reinterpret_cast<LPNMTREEVIEW>(pNMHDR);
+	// TODO: Add your control notification handler code here
+	*pResult = 0;
+}
+
+void CProjectTreeDlg::OnTvnSelchangedTreeControl(NMHDR * pNMHDR, LRESULT * pResult)
 {
 	LPNMTREEVIEW pNMTreeView = reinterpret_cast<LPNMTREEVIEW>(pNMHDR);
 	// TODO: Add your control notification handler code here
