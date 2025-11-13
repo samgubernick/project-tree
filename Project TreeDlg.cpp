@@ -23,11 +23,29 @@ IMPLEMENT_DYNAMIC(CProjectTreeDlg, CDialogEx)
 
 // CProjectTreeDlg dialog
 
+CString GetRelativePath(const CString & fullPath)
+{
+	int srcPos = fullPath.Find(_T("src\\"));
+	int includePos = fullPath.Find(_T("include\\"));
+
+	if (srcPos != -1)
+	{
+		return fullPath.Mid(srcPos);
+	}
+	else if (includePos != -1)
+	{
+		return fullPath.Mid(includePos);
+	}
+
+	// If neither src nor include found, return the full path
+	return fullPath;
+}
 
 CProjectTreeDlg::~CProjectTreeDlg() = default;
 
 CProjectTreeDlg::CProjectTreeDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_PROJECT_TREE_DIALOG, pParent),
+	isFocused{false},
 	m_bDragging(FALSE),
 	m_hDragItem(nullptr),
 	m_pDragImageList(nullptr),
@@ -82,6 +100,7 @@ BOOL CProjectTreeDlg::PreTranslateMessage(MSG * pMsg)
 					{
 						// It's a file, open it
 						ShellExecute(nullptr, _T("open"), idePath, *pFilePath, nullptr, SW_SHOW);
+						SetWindowText(GetRelativePath(*pFilePath));
 					}
 				}
 			}
@@ -443,7 +462,7 @@ BOOL CProjectTreeDlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);			// Set big icon
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
-	SetWindowText(_T("D:/lanterns"));
+	SetWindowText(_T("Project Tree"));
 
 	BOOL value = TRUE;
 	DwmSetWindowAttribute(GetSafeHwnd(), DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
@@ -1091,6 +1110,7 @@ afx_msg void CProjectTreeDlg::OnTreeDblClick(NMHDR * pNMHDR, LRESULT * pResult)
 			if (!pFilePath->IsEmpty() && pFilePath->GetAt(pFilePath->GetLength() - 1) != _T('\\'))
 			{
 				ShellExecute(nullptr, _T("open"), idePath, *pFilePath, nullptr, SW_SHOW);
+				SetWindowText(GetRelativePath(*pFilePath));
 			}
 		}
 	}
@@ -2019,6 +2039,7 @@ void CProjectTreeDlg::OnActivate(UINT nState, CWnd * pWndOther, BOOL bMinimized)
 {
 	CDialogEx::OnActivate(nState, pWndOther, bMinimized);
 
+	isFocused = nState;
 	if (nState == WA_INACTIVE)
 	{
 		// Window is losing focus - darken the tree control
@@ -2060,12 +2081,24 @@ void CProjectTreeDlg::OnCustomDraw(NMHDR * pNMHDR, LRESULT * pResult)
 
 				// Draw custom background
 				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
-				pDC->FillSolidRect(&rect, RGB(30, 30, 60));  // Black background
+				pDC->FillSolidRect(&rect, RGB(
+					isFocused ? 30 : 15,
+					isFocused ? 30 : 15,
+					isFocused ? 60 : 30
+				));  // Black background
 
 
 				// Custom selection colors
-				pCustomDraw->clrText = RGB(205, 205, 205);  // White text
-				pCustomDraw->clrTextBk = RGB(0, 50, 0);  // Blue background (Windows 10 style)
+				pCustomDraw->clrText = RGB(
+					isFocused ? 205 : 155,
+					isFocused ? 205 : 155,
+					isFocused ? 205 : 155
+				);  // White text
+				pCustomDraw->clrTextBk = RGB(
+					isFocused ? 40 : 20,
+					isFocused ? 40 : 20,
+					isFocused ? 110 : 55
+				);  // Blue background (Windows 10 style)
 
 				*pResult = CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;  // Tell it we changed colors
 			}
@@ -2077,11 +2110,15 @@ void CProjectTreeDlg::OnCustomDraw(NMHDR * pNMHDR, LRESULT * pResult)
 
 				// Draw custom background
 				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
-				pDC->FillSolidRect(&rect, RGB(40, 40, 40));  // Black background
+				pDC->FillSolidRect(&rect, RGB(
+					isFocused ? 40 : 20,
+					isFocused ? 40 : 20,
+					isFocused ? 4 : 20
+				));  // Black background
 
 				// Custom selection colors
 				pCustomDraw->clrText = RGB(205, 205, 205);  // White text
-				pCustomDraw->clrTextBk = RGB(100, 0, 0);  // Blue background (Windows 10 style)
+				pCustomDraw->clrTextBk = RGB(0, 0, 50);  // Blue background (Windows 10 style)
 				*pResult = CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;  // Tell it we changed colors
 			}
 			else
@@ -2103,13 +2140,21 @@ void CProjectTreeDlg::OnCustomDraw(NMHDR * pNMHDR, LRESULT * pResult)
 
 				// Draw custom background
 				CDC * pDC = CDC::FromHandle(pCustomDraw->nmcd.hdc);
-				CBrush brush(RGB(40, 40, 110));
+				CBrush brush(RGB(
+					isFocused ? 40 : 20,
+					isFocused ? 40 : 20,
+					isFocused ? 110 : 55
+				));
 				pDC->FillRect(&rect, &brush);
 
 				// Redraw text
 				CString text = m_treeCtrl.GetItemText(hItem);
-				pDC->SetTextColor(RGB(205, 205, 205));
-				pDC->SetBkColor(RGB(0, 100, 0));
+				pDC->SetTextColor(RGB(
+					isFocused ? 205 : 155,
+					isFocused ? 205 : 155,
+					isFocused ? 205 : 155
+				));
+				pDC->SetBkColor(RGB(0, 0, 30));
 				pDC->SetBkMode(TRANSPARENT);
 				pDC->DrawText(text, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 			}

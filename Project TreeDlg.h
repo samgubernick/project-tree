@@ -61,7 +61,7 @@ protected:
 	bool m_isCutOperation;
 	CString idePath;
 
-
+	UINT isFocused;
 
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
